@@ -1,6 +1,6 @@
 #!/usr/bin/python
 
-# Brute force coherence (Gabriele Vajente, 2015-06-11)
+# Brute force coherence (Gabriele Vajente, 2015-06-16)
 # 
 # Command line arguments (with default values)
 #
@@ -19,6 +19,9 @@
 #                             web page summary
 # --plot=png                  plot format (png, pdf, none)
 # --nproc                     number of processes to use (if not specified, use all CPUs)
+# --calib	                  name of a text file containing the calibration transfer 
+#							  function to be applied to the target channel spectrum, in 
+#							  a two column format (frequency, absolute value)
 #
 # Example:
 # ./bruco.py --ifo=H1 --channel=CAL-DELTAL_EXTERNAL_DQ --gpsb=1111224016 --length=600 --outfs=4096 --naver=100 --dir=./bruco_1111224016 --top=100 --webtop=20
@@ -31,7 +34,7 @@
 #
 # CHANGELOG:
 # 
-# 2015-01-29 added linear detrending in PSD and coherence to improve low frequency bins
+# 2015-01-29 - added linear detrending in PSD and coherence to improve low frequency bins
 # 2015-02-16 - split coherence computation into PSDs and CSDs to remove redundant compuation of main channel PSD (still room to improve here)
 #            - removed upsampling of channels with lower sampling rate (now coherences are always computed with the minimum possible number of samples)
 # 2015-02-18 - further splitting of coherence into primitive FFTs
@@ -39,6 +42,7 @@
 # 2015-02-24 - corrected typo in options lenght -> length
 #            - implemented parallel processing
 # 2015-06-11 - using gw_data_find to locate the GWF files
+# 2015-06-16 - added calibration transfer function option
 
 import numpy
 import os
@@ -66,6 +70,10 @@ warnings.filterwarnings("ignore")
 exc = 'bruco_excluded_channels.txt'
 # where to save temporary gwf cache
 scratchdir = '/tmp/bruco_tmp'
+
+# this variable will contain the calibration transfer function, need to 
+# declare it here to make it global
+calibration = []
 
 # do some timing
 start_time = time.time()  
@@ -100,9 +108,9 @@ def parallelized_coherence(args):
     
         # resample to outfs if needed
         if fs2 > outfs:
-    	    # here I'm using a custom decimate function, defined in functions.py
+            # here I'm using a custom decimate function, defined in functions.py
             ch2 = decimate(ch2, int(fs2 / outfs))
-    	    fs2 = outfs
+            fs2 = outfs
     
         ###### compute coherence
         # compute all the FFTs of the aux channel (those FFTs are returned already normalized 
@@ -143,10 +151,10 @@ def parallelized_coherence(args):
             grid(True)
             ylabel('Coherence')
             subplot(212)
-            loglog(f1, psd1[0:len(f1)])
+            loglog(f1, calibration[0:len(f1)] * psd1[0:len(f1)])
             mask = ones(shape(f))
-	    mask[c<s] = nan
-            loglog(f, psd1[0:len(psd2)] * sqrt(c) * mask, 'r')
+            mask[c<s] = nan
+            loglog(f, calibration[0:len(psd2)] * psd1[0:len(psd2)] * sqrt(c) * mask, 'r')
             axis(xmax=outfs/2)
             xlabel('Frequency [Hz]')
             grid(True)
@@ -197,6 +205,9 @@ parser.add_option("-p", "--plot", dest="plotformat",
 parser.add_option("-N", "--nproc", dest="ncpu",
 		  default='-1',
 		  help="number of processes to lauch", metavar="NumProc")
+parser.add_option("-C", "--calib", dest="calib",
+		  default='',
+		  help="calibration transfer function filename", metavar="Calibration")
 
 (opt,args) = parser.parse_args()
 
@@ -220,8 +231,8 @@ print
 
 # determine which are the useful frame files and create the cache
 if opt.ifo == '':
-	print "Must specify the IFO!"
-	exit()
+    print "Must specify the IFO!"
+    exit()
 
 # Create the scratch directory if need be
 try:
@@ -318,12 +329,17 @@ ch1_ffts = computeFFTs(ch1, npoints*fs1/outfs, (npoints*fs1/outfs)/2, fs1)
 psd1 = mean(abs(ch1_ffts)**2,1) 
 f1 = linspace(0, fs1/2, npoints*fs1/outfs/2+1)
 
-### Here come some initializations of variables
+### Read the calibration transfer function, if specified
+if opt.calib != '':
+	# load from file
+	cdata = numpy.loadtxt(opt.calib)
+	# interpolate to the right frequency bins
+	calibration = numpy.interp(f1, cdata[:,0], cdata[:,1])
+else:
+	# no calibration specified, use unity
+	calibration = numpy.ones(shape(f1))	
 
-# create table of top ntop channels for each frequency bin
-ntop = int(opt.ntop)
-cohtab = zeros((npoints/2+1, ntop))
-idxtab = zeros((npoints/2+1, ntop), dtype=int)
+### Here come some initializations of variables
 
 # compute the coherence confidence level based on the number of averages used in the PSD
 s = scipy.stats.f.ppf(0.95, 2, 2*nav)
@@ -335,7 +351,7 @@ s = s/(nav - 1 + s)
 if opt.ncpu == "-1":
     ncpu = multiprocessing.cpu_count()
 else:
-    ncpui = int(opt.ncpu)
+    ncpu = int(opt.ncpu)
 # try the most even possible distribution of channels among the processes
 nchannels = len(channels)
 n = nchannels / ncpu
@@ -401,7 +417,7 @@ for c in L:
 
 # open web page
 page = markup.page( )
-page.init( title="Brute force Coherences", \
+page.init( title="Brute force Coherences",
            footer="(2015)  <a href=mailto:vajente@caltech.edu>vajente@caltech.edu</a>" )
 
 
@@ -435,10 +451,10 @@ for i in range(nf):
         if cohtab[i,-(j+1)] > s:
             page.td(bgcolor=cohe_color(cohtab[i,-(j+1)]))
             ch = (channels[int(idxtab[i,-(j+1)])]).split(':')[1]
-	    if opt.plotformat != "none":
-            	page.add("<a target=_blank href=%s.%s>%s</a><br>(%.2f)" \
+            if opt.plotformat != "none":
+                page.add("<a target=_blank href=%s.%s>%s</a><br>(%.2f)"
                          % (ch, opt.plotformat, newline_name(ch), cohtab[i,-(j+1)]))
-	    else:
+            else:
                 page.add("%s<br>(%.2f)" \
                          % (newline_name(ch), cohtab[i,-(j+1)]))
         else:

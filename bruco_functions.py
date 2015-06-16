@@ -29,7 +29,7 @@ def computeFFTs(x, npoints, noverlap, fs):
 	segs[:,i] = rfft( detrend_linear(x[ind[i]:ind[i]+npoints]) * wind)
 
     # normalization to get PSD with |fft|^2
-    segs = segs * sqrt(2.0/fs / sum(hanning(npoints)**2))
+    segs = segs * sqrt(2.0/fs / sum(wind**2))
 
     # that's all
     return segs
