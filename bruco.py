@@ -19,12 +19,14 @@
 #                             web page summary
 # --plot=png                  plot format (png, pdf, none)
 # --nproc                     number of processes to use (if not specified, use all CPUs)
-# --calib	                  name of a text file containing the calibration transfer 
-#							  function to be applied to the target channel spectrum, in 
-#							  a two column format (frequency, absolute value)
+# --calib	              name of a text file containing the calibration transfer 
+#			      function to be applied to the target channel spectrum, in 
+#			      a two column format (frequency, absolute value)
+# --xlim                      limits for the frequency axis in plots, in the format fmin:fmax
+# --ylim                      limits for the y axis in PSD plots, in the format ymin:ymax
 #
 # Example:
-# ./bruco.py --ifo=H1 --channel=CAL-DELTAL_EXTERNAL_DQ --gpsb=1111224016 --length=600 --outfs=4096 --naver=100 --dir=./bruco_1111224016 --top=100 --webtop=20
+# ./bruco.py --ifo=H1 --channel=CAL-DELTAL_EXTERNAL_DQ --calib=lho_darm_calibration.txt --gpsb=1111224016 --length=600 --outfs=4096 --naver=100 --dir=./bruco_1111224016 --top=100 --webtop=20 --xlim=1:1000 --ylim=1e-20:1e-14
 #
 # To properly run the script, you need to setup a couple of more things. On line 52 you 
 # must define where the lits of excluded channels is. The default is the same directory, 
@@ -43,7 +45,7 @@
 #            - implemented parallel processing
 # 2015-06-11 - using gw_data_find to locate the GWF files
 # 2015-06-16 - added calibration transfer function option
-
+#            - added expanduser to all paths to allow use of ~
 import numpy
 import os
 import matplotlib
@@ -74,6 +76,7 @@ scratchdir = '/tmp/bruco_tmp'
 # this variable will contain the calibration transfer function, need to 
 # declare it here to make it global
 calibration = []
+psd_plot = []
 
 # do some timing
 start_time = time.time()  
@@ -87,32 +90,41 @@ def parallelized_coherence(args):
     cohtab = zeros((npoints/2+1, ntop))
     idxtab = zeros((npoints/2+1, ntop), dtype=int)
 
+    # init timing variables
+    timing = numpy.zeros(5)
+
     # analyze every channel in the list
     for channel2,i in zip(channels,arange(len(channels))):
         print "  Process %d: channel %d of %d: %s" % (id, i+1, len(channels), channel2)
     
         # read auxiliary channel
-        try:
+        timing[0] = timing[0] - time.time()
+	try:
             buffer = d.fetch(channel2, gpsb, gpse)
         except:
             print "  Process %d: some error occurred in channel %s: %s", (id, channel2, sys.exc_info())
             continue
-    
+
         # extract the channel and the sampling frequency
         ch2 = numpy.array(buffer)
         fs2 = len(ch2) / dt
-        # check if the channel is flat, and skip it if so
+	timing[0] = timing[0] + time.time()
+	
+	# check if the channel is flat, and skip it if so
         if min(ch2) == max(ch2):
             print "  Process %d: %s is flat, skipping" % (id, channel2)
             continue
     
         # resample to outfs if needed
         if fs2 > outfs:
+	    timing[1] = timing[1] - time.time()
             # here I'm using a custom decimate function, defined in functions.py
             ch2 = decimate(ch2, int(fs2 / outfs))
             fs2 = outfs
+	    timing[1] = timing[1] + time.time() 
     
         ###### compute coherence
+	timing[2] = timing[2] - time.time()
         # compute all the FFTs of the aux channel (those FFTs are returned already normalized 
         # so that the MATLAB-like scaled PSD is just sum |FFT|^2
         ch2_ffts = computeFFTs(ch2, npoints*fs2/outfs, npoints*fs2/outfs/2, fs2)
@@ -122,14 +134,16 @@ def parallelized_coherence(args):
         csd12 = mean(conjugate(ch2_ffts)*ch1_ffts[0:npoints*fs2/outfs/2+1,:],1) 
         # we use the full sampling PSD of the main channel, using only the bins corresponding to channel2 sampling
         c = abs(csd12)**2/(psd2 * psd1[0:len(psd2)])
-            
+        timing[2] = timing[2] + time.time()    
+	
         # save coherence in summary table. Basically, cohtab has a row for each frequency bin and a number of
         # columns which is determined by the option --top. For each frequency bin, the new coherence value is added
         # only if it's larger than the minimum already present. Then idxtab contains again a row for each frequency 
         # bin: but in this case each entry is an unique index that determines the channel that gave that coherence.
         # So for example cohtab[100,0] gives the highest coherence for the 100th frequency bin; idxtab[100,0] contains
         # an integer id that corresponds to the channel. This id is saved in channels.txt  
-        for cx,j in zip(c,arange(len(c))):
+        timing[3] = timing[3] - time.time()
+	for cx,j in zip(c,arange(len(c))):
             top = cohtab[j, :]
             idx = idxtab[j, :]
             if cx > min(top):
@@ -139,33 +153,47 @@ def parallelized_coherence(args):
                 ii = ii[1:]
                 cohtab[j, :] = ttop[ii]
                 idxtab[j, :] = iidx[ii]
-                
+        timing[3] = timing[3] + time.time()
+        
         # create the output plot, if desired, and with the desired format
+	timing[4] = timing[4] - time.time()
         if opt.plotformat != "none":
             figure()
             subplot(211)
             title('Coherence %s vs %s - GPS %d' % (opt.channel, channel2, gpsb), fontsize='smaller')
             loglog(f, c, f, ones(shape(f))*s, 'r--', linewidth=0.5)
-            axis(xmax=outfs/2)
+            if xmin != -1:
+                xlim([xmin,xmax])
+            else:
+                axis(xmax=outfs/2)
             axis(ymin=s/2, ymax=1)
             grid(True)
             ylabel('Coherence')
-            subplot(212)
-            loglog(f1, calibration[0:len(f1)] * psd1[0:len(f1)])
+            legend(('Coherence', 'Statistical signficance'))
+	    subplot(212)
+            loglog(f1, psd_plot[0:len(f1)])
             mask = ones(shape(f))
             mask[c<s] = nan
-            loglog(f, calibration[0:len(psd2)] * psd1[0:len(psd2)] * sqrt(c) * mask, 'r')
-            axis(xmax=outfs/2)
+            loglog(f, psd_plot[0:len(psd2)] * sqrt(c) * mask, 'r')
+            if xmin != -1:
+		xlim([xmin,xmax])
+	    else:
+	    	axis(xmax=outfs/2)
+	    if ymin != -1:
+		ylim([ymin, ymax])
             xlabel('Frequency [Hz]')
+	    ylabel('Spectrum')
+	    legend(('Target channel', 'Noise projection'))
             grid(True)
             
-            savefig(opt.dir + '/%s.%s' % (channel2.split(':')[1], opt.plotformat), format=opt.plotformat)
+            savefig(os.path.expanduser(opt.dir) + '/%s.%s' % (channel2.split(':')[1], opt.plotformat), format=opt.plotformat)
             close()
-        
+        timing[4] = timing[4] + time.time()
+
         del ch2, c, f
            
-    print "  Process %s is done" % id
-    return cohtab, idxtab, id
+    print "  Process %s concluded" % id
+    return cohtab, idxtab, id, timing
 
 ##### Define and get command line options ###################
 parser = OptionParser()
@@ -208,6 +236,12 @@ parser.add_option("-N", "--nproc", dest="ncpu",
 parser.add_option("-C", "--calib", dest="calib",
 		  default='',
 		  help="calibration transfer function filename", metavar="Calibration")
+parser.add_option("-X", "--xlim", dest="xlim",
+		  default='',
+		  help="frequency axis limit, in the format fmin:fmax", metavar="XLim")
+parser.add_option("-Y", "--ylim", dest="ylim",
+		  default='',
+		  help="PSD y asix limits,in the format ymin:ymax", metavar="YLim")
 
 (opt,args) = parser.parse_args()
 
@@ -219,6 +253,17 @@ nav = int(opt.nav)
 ntop = int(opt.ntop)
 wtop = int(opt.wtop)
 minfs = int(opt.minfs)
+
+# see if the user specified custom plot limits
+if opt.xlim != '':
+    xmin, xmax = map(lambda x:float(x), opt.xlim.split(':'))
+else:
+    xmin, xmax = -1, -1
+
+if opt.ylim != '':
+    ymin, ymax = map(lambda x:float(x), opt.ylim.split(':'))
+else:
+    ymin, ymax = -1, -1
 
 ###### Prepare files for data reading ###############################
 
@@ -236,10 +281,10 @@ if opt.ifo == '':
 
 # Create the scratch directory if need be
 try:
-    os.stat(scratchdir)
+    os.stat(os.path.expanduser(scratchdir))
     new_scratch = False
 except:
-    os.mkdir(scratchdir)
+    os.mkdir(os.path.expanduser(scratchdir))
     new_scratch = True
 
 # find the location of the GWF files
@@ -296,11 +341,11 @@ channels = unique(channels)
 
 # save reduced channel list on textfile, creating the output directory if needed
 try:
-    os.stat(opt.dir)
+    os.stat(os.path.expanduser(opt.dir))
 except:
-    os.mkdir(opt.dir)
+    os.mkdir(os.path.expanduser(opt.dir))
 
-f = open(opt.dir + '/channels.txt', 'w')
+f = open(os.path.expanduser(opt.dir) + '/channels.txt', 'w')
 for c in channels:
     f.write("%s\n" % (c))
 f.close()
@@ -338,6 +383,8 @@ if opt.calib != '':
 else:
 	# no calibration specified, use unity
 	calibration = numpy.ones(shape(f1))	
+
+psd_plot = numpy.sqrt(psd1) * calibration
 
 ### Here come some initializations of variables
 
@@ -396,18 +443,22 @@ for j in arange(shape(cohtab)[0]):
 cohtab = cohtab[:,-ntop:]
 idxtab = idxtab[:,-ntop:]
 
+# get and save timing information
+timing = concatenate(x[3], axis=1)
+numpy.savetxt('brucotiming.txt', timing)
+
 ###### Here we save the results to some files in the output directory ####################
 
 # save the coherence tables to files
-numpy.savetxt(opt.dir + '/cohtab.txt', cohtab)
-numpy.savetxt(opt.dir + '/idxtab.txt', idxtab)
+numpy.savetxt(os.path.expanduser(opt.dir) + '/cohtab.txt', cohtab)
+numpy.savetxt(os.path.expanduser(opt.dir) + '/idxtab.txt', idxtab)
 
 ###### And we generate the HTML report #########################################
 
 print ">>>>> Generating report...."
 
 # get list of files, since they corresponds to the list of plots that have been created
-command = 'ls %s/*.%s' % (opt.dir, opt.plotformat)
+command = 'ls %s/*.%s' % (os.path.expanduser(opt.dir), opt.plotformat)
 p,g = os.popen4(command)
 L = g.readlines()
 files = []
@@ -492,7 +543,7 @@ if len(files)>0:
     page.br()
 
 # That's the end, save the HTML page
-fileid = open(opt.dir  + '/index.html', 'w')
+fileid = open(os.path.expanduser(opt.dir)  + '/index.html', 'w')
 print >> fileid, page
 fileid.close()
 
