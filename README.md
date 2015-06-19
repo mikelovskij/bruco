@@ -19,9 +19,15 @@ Command line arguments (with default values)
                             web page summary
 --plot=png                  plot format (png, pdf, none)
 --nproc                     number of processes to use (if not specified, use all CPUs)
+--calib                     name of a text file containing the calibration transfer 
+                            function to be applied to the target channel spectrum, in 
+                            a two column format (frequency, absolute value)
+--xlim                      limits for the frequency axis in plots, in the format fmin:fmax
+--ylim                      limits for the y axis in PSD plots, in the format ymin:ymax
 
 Example:
-./bruco.py --ifo=H1 --channel=CAL-DELTAL_EXTERNAL_DQ --gpsb=1111224016 --length=600 --outfs=4096 --naver=100 --dir=./bruco_1111224016 --top=100 --webtop=20
+./bruco.py --ifo=H1 --channel=CAL-DELTAL_EXTERNAL_DQ --calib=lho_darm_calibration.txt --gpsb=1111224016 
+           --length=600 --outfs=4096 --naver=100 --dir=./bruco_1111224016 --top=100 --webtop=20 --xlim=1:1000 --ylim=1e-20:1e-14
 
 To properly run the script, you need to setup a couple of more things. On line 52 you
 must define where the lits of excluded channels is. The default is the same directory,
@@ -39,4 +45,5 @@ CHANGELOG:
 2015-02-24 - corrected typo in options lenght -> length
            - implemented parallel processing
 2015-06-11 - using gw_data_find to locate the GWF files
-
+2015-06-16 - added calibration transfer function option
+           - added expanduser to all paths to allow use of ~
