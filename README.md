@@ -1,9 +1,7 @@
 Brute force coherence (Gabriele Vajente, 2015-06-11)
 ****************************************************
 
-
 Command line arguments (with default values)
-
 --ifo                       interferometer prefix (no default, must specify)
 --channel=OAF-CAL_DARM_DQ   name of the main channel
 --gpsb=1087975458           starting time
