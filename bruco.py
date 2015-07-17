@@ -169,7 +169,7 @@ def parallelized_coherence(args):
             axis(ymin=s/2, ymax=1)
             grid(True)
             ylabel('Coherence')
-            legend(('Coherence', 'Statistical signficance'))
+            #legend(('Coherence', 'Statistical significance'))
 	    subplot(212)
             loglog(f1, psd_plot[0:len(f1)])
             mask = ones(shape(f))
