@@ -54,13 +54,17 @@ from optparse import OptionParser
 from pylab import *
 import time
 from bruco_functions import *
+from import_functions import *
 import markup
 import fnmatch
 import scipy.stats
 import sys
 import subprocess
-from glue import lal
-from pylal import frutils, Fr
+try:
+    from glue import lal
+    from pylal import frutils, Fr
+except ImportError:
+    print "Failed to import glue and pylal modules, it should not be a problem if the selected ifo is V1"
 import multiprocessing
 import itertools
 import warnings
@@ -99,32 +103,32 @@ def parallelized_coherence(args):
     
         # read auxiliary channel
         timing[0] = timing[0] - time.time()
-	try:
-            buffer = d.fetch(channel2, gpsb, gpse)
+        try:
+            ch2, fs2 = channel_fetch(opt.ifo, channel2, gpsb, gpse, d)
         except:
             print "  Process %d: some error occurred in channel %s: %s", (id, channel2, sys.exc_info())
             continue
 
-        # extract the channel and the sampling frequency
-        ch2 = numpy.array(buffer)
-        fs2 = len(ch2) / dt
-	timing[0] = timing[0] + time.time()
-	
-	# check if the channel is flat, and skip it if so
+
+        timing[0] = timing[0] + time.time()
+
+
+        # check if the channel is flat, and skip it if so
+
         if min(ch2) == max(ch2):
             print "  Process %d: %s is flat, skipping" % (id, channel2)
             continue
     
         # resample to outfs if needed
         if fs2 > outfs:
-	    timing[1] = timing[1] - time.time()
+            timing[1] = timing[1] - time.time()
             # here I'm using a custom decimate function, defined in functions.py
             ch2 = decimate(ch2, int(fs2 / outfs))
-            fs2 = outfs
-	    timing[1] = timing[1] + time.time() 
+            fs2 = len(ch2)/(gpse - gpsb)  # changed this in order to have the correct fs2, which usually is larger than outfs
+            timing[1] = timing[1] + time.time()
     
         ###### compute coherence
-	timing[2] = timing[2] - time.time()
+	    timing[2] = timing[2] - time.time()
         # compute all the FFTs of the aux channel (those FFTs are returned already normalized 
         # so that the MATLAB-like scaled PSD is just sum |FFT|^2
         ch2_ffts = computeFFTs(ch2, npoints*fs2/outfs, npoints*fs2/outfs/2, fs2)
@@ -135,7 +139,7 @@ def parallelized_coherence(args):
         # we use the full sampling PSD of the main channel, using only the bins corresponding to channel2 sampling
         c = abs(csd12)**2/(psd2 * psd1[0:len(psd2)])
         timing[2] = timing[2] + time.time()    
-	
+
         # save coherence in summary table. Basically, cohtab has a row for each frequency bin and a number of
         # columns which is determined by the option --top. For each frequency bin, the new coherence value is added
         # only if it's larger than the minimum already present. Then idxtab contains again a row for each frequency 
@@ -143,7 +147,7 @@ def parallelized_coherence(args):
         # So for example cohtab[100,0] gives the highest coherence for the 100th frequency bin; idxtab[100,0] contains
         # an integer id that corresponds to the channel. This id is saved in channels.txt  
         timing[3] = timing[3] - time.time()
-	for cx,j in zip(c,arange(len(c))):
+        for cx,j in zip(c, arange(min(len(c), npoints/2 + 1))):
             top = cohtab[j, :]
             idx = idxtab[j, :]
             if cx > min(top):
@@ -156,7 +160,7 @@ def parallelized_coherence(args):
         timing[3] = timing[3] + time.time()
         
         # create the output plot, if desired, and with the desired format
-	timing[4] = timing[4] - time.time()
+        timing[4] = timing[4] - time.time()
         if opt.plotformat != "none":
             figure()
             subplot(211)
@@ -170,20 +174,20 @@ def parallelized_coherence(args):
             grid(True)
             ylabel('Coherence')
             #legend(('Coherence', 'Statistical significance'))
-	    subplot(212)
+            subplot(212)
             loglog(f1, psd_plot[0:len(f1)])
             mask = ones(shape(f))
             mask[c<s] = nan
             loglog(f, psd_plot[0:len(psd2)] * sqrt(c) * mask, 'r')
             if xmin != -1:
-		xlim([xmin,xmax])
-	    else:
-	    	axis(xmax=outfs/2)
-	    if ymin != -1:
-		ylim([ymin, ymax])
+                xlim([xmin,xmax])
+            else:
+                axis(xmax=outfs/2)
+            if ymin != -1:
+                ylim([ymin, ymax])
             xlabel('Frequency [Hz]')
-	    ylabel('Spectrum')
-	    legend(('Target channel', 'Noise projection'))
+            ylabel('Spectrum')
+            legend(('Target channel', 'Noise projection'))
             grid(True)
             
             savefig(os.path.expanduser(opt.dir) + '/%s.%s' % (channel2.split(':')[1], opt.plotformat), format=opt.plotformat)
@@ -197,6 +201,10 @@ def parallelized_coherence(args):
 
 ##### Define and get command line options ###################
 parser = OptionParser()
+parser.add_option("-a", "--channellist", dest="channelfile",
+                  default=None,
+                  help="list of auxilliary channels to scan. If not provided, it will instead scan all the raw channels ",
+                  metavar="FILEPATH")
 parser.add_option("-c", "--channel", dest="channel",
                   default='OAF-CAL_DARM_DQ',
                   help="target channel", metavar="Channel")
@@ -287,54 +295,35 @@ except:
     os.mkdir(os.path.expanduser(scratchdir))
     new_scratch = True
 
-# find the location of the GWF files
-files = find_LIGO_data(opt.ifo, gpsb, gpsb+dt)
+if opt.ifo == 'V1':
+    channels = virgo_list_channels(opt, minfs, gpsb)
+    d = []
+else:
+    channels, d = ligo_list_channels(opt, gpsb, dt, scratchdir, minfs)
 
-# create the cache file
-c = lal.Cache.from_urls(files)
-d = frutils.FrameCache(c, scratchdir=scratchdir, verbose=True)
 
-###### Extract the list of channels and remove undesired ones ######################
-
-print ">>>>> Creating chache and extracting list of channels...."
-# read the list of channels and sampling rates from the first file
-firstfile = c[0].path
-os.system('/usr/bin/FrChannels ' + firstfile + ' > bruco.channels')
-f = open('bruco.channels')
-lines = f.readlines()
-channels = []
-sample_rate = []
-for l in lines:
-    ll = l.split()
-    if ll[0][1] != '0':
-        # remove all L0/H0 channels
-        channels.append(ll[0])
-        sample_rate.append(int(ll[1]))
-channels = array(channels)
-sample_rate = array(sample_rate)
-
-# keep only channels with high enough sampling rate
-idx = find(sample_rate >= minfs)
-channels = channels[idx]
-sample_rate = sample_rate[idx]
 
 # load exclusion list from file
-f = open(exc, 'r')
-L = f.readlines()
-excluded = []
-for c in L:
-    c = c.split()[0]
-    excluded.append(c)
-f.close()
+try:
+    f = open(exc, 'r')
+    L = f.readlines()
+    excluded = []
+    for c in L:
+        c = c.split()[0]
+        excluded.append(c)
+    f.close()
 
-# delete excluded channels, allowing for unix-shell-like wildcards
-idx = ones(shape(channels), dtype='bool')
-for c,i in zip(channels, arange(len(channels))):
-    for e in excluded:
-        if fnmatch.fnmatch(c, opt.ifo + ':' + e):
-            idx[i] = False
+    # delete excluded channels, allowing for unix-shell-like wildcards
+    idx = np.ones(np.shape(channels), dtype='bool')
+    for c, i in zip(channels, xrange(len(channels))):
+        for e in excluded:
+            if fnmatch.fnmatch(c, opt.ifo + ':' + e):
+                idx[i] = False
 
-channels = channels[idx]
+    channels = channels[idx]
+except IOError:
+    print "Excluded Channels File ({0}) not found, will process ALL channels !!!".format(exc)
+    pass
 
 # make list unique, removing repeated channels, if any
 channels = unique(channels)
@@ -358,12 +347,10 @@ print "Found %d channels\n\n" % nch
 print ">>>>> Processing all channels...."
 
 # load the main target channel
-buffer = d.fetch(opt.ifo + ':' + opt.channel, gpsb, gpse)
-ch1 = numpy.array(buffer)
-fs1 = len(ch1) / dt
+ch1, fs1 = channel_fetch(opt.ifo, opt.channel, gpsb, gpse, d)
 
 # number of points per FFT
-npoints = pow(2,int(log((gpse - gpsb) * outfs / nav) / log(2)))
+npoints = pow(2, int(log((gpse - gpsb) * outfs / nav) / log(2)))
 print "Number of points = %d\n" % npoints
 
 # compute the main channels FFTs and PSD. Here I save the single segments FFTS, 
@@ -376,13 +363,13 @@ f1 = linspace(0, fs1/2, npoints*fs1/outfs/2+1)
 
 ### Read the calibration transfer function, if specified
 if opt.calib != '':
-	# load from file
-	cdata = numpy.loadtxt(opt.calib)
-	# interpolate to the right frequency bins
-	calibration = numpy.interp(f1, cdata[:,0], cdata[:,1])
+    # load from file
+    cdata = numpy.loadtxt(opt.calib)
+    # interpolate to the right frequency bins
+    calibration = numpy.interp(f1, cdata[:,0], cdata[:,1])
 else:
-	# no calibration specified, use unity
-	calibration = numpy.ones(shape(f1))	
+    # no calibration specified, use unity
+    calibration = numpy.ones(shape(f1))
 
 psd_plot = numpy.sqrt(psd1) * calibration
 
