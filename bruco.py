@@ -135,11 +135,10 @@ def parallelized_coherence(args):
         # average to get PSDs and CSDs, create frequency vector
         psd2 = mean(abs(ch2_ffts)**2,1) 
         f = linspace(0, fs2/2, npoints*fs2/outfs/2+1)
-        csd12 = mean(conjugate(ch2_ffts)*ch1_ffts[0:npoints*fs2/outfs/2+1,:],1) 
+        csd12 = mean(conjugate(ch2_ffts)*ch1_ffts[0:npoints*fs2/outfs/2+1,:],1)
         # we use the full sampling PSD of the main channel, using only the bins corresponding to channel2 sampling
         c = abs(csd12)**2/(psd2 * psd1[0:len(psd2)])
-        timing[2] = timing[2] + time.time()    
-
+        timing[2] = timing[2] + time.time()
         # save coherence in summary table. Basically, cohtab has a row for each frequency bin and a number of
         # columns which is determined by the option --top. For each frequency bin, the new coherence value is added
         # only if it's larger than the minimum already present. Then idxtab contains again a row for each frequency 
@@ -360,7 +359,6 @@ print "Number of points = %d\n" % npoints
 ch1_ffts = computeFFTs(ch1, npoints*fs1/outfs, (npoints*fs1/outfs)/2, fs1)
 psd1 = mean(abs(ch1_ffts)**2,1) 
 f1 = linspace(0, fs1/2, npoints*fs1/outfs/2+1)
-
 ### Read the calibration transfer function, if specified
 if opt.calib != '':
     # load from file

@@ -124,6 +124,7 @@ def virgo_list_channels(opt, minfs, gpsb): #the exclusion part could be in commo
 def channel_fetch(ifo, channel, gpsb, gpse, d):
     if ifo == 'V1':
         ch, fs = getRawData(channel, gpsb, gpse - gpsb)
+        fs = len(ch) / (gpse - gpsb)
     else:
         buffer = d.fetch(ifo + ':' + channel, gpsb, gpse)
         ch = np.array(buffer)
